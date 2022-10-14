@@ -1,0 +1,47 @@
+#register, #login , #postfunction, #logPost {
+    width: 500px;
+
+    border: 1px solid #d6d7da;
+    padding: 0px 20px 20px 20px;
+    border-radius: 5px;
+    font-family: Sans-serif;
+    line-height: 16px;
+    color: #557A95;
+    font-size: 14px;
+    background: #5a5b63;
+    margin: 1px auto;
+  }
+  
+  form label, form input {
+    display: block;
+    margin-bottom: 10px;
+    width: 20%
+   
+  }
+  
+  form input {
+    padding: 10px;
+    border: solid 1px #2d67ae;
+    margin: 5px auto;
+    padding: 0px 15px 15px 15px;
+  
+  }
+  
+  .button {
+  
+    background-color: #357ebe;
+    border-color: #b0b0b0;
+    font-weight: bold;
+    padding: 6px 7px;
+    color: #eaeaea;
+  }
+  
+  .errorMsg {
+    color: #cc0000;
+    margin-bottom: 12px;
+  }
+  
+  .sucessMsg {
+    color: #18ab4e;
+    margin-bottom: 10px;
+  }

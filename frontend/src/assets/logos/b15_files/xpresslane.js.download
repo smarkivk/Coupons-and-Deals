@@ -1,0 +1,776 @@
+if (document.readyState !== 'loading') {
+    if (!window.location.href.includes('index')) {
+        updateAnalytics();
+    }
+} else {
+    document.addEventListener('DOMContentLoaded', function () {
+        if (!window.location.href.includes('index')) {
+            updateAnalytics();
+        }
+    });
+}
+  
+  function updateAnalytics(){
+    if (window.location.href.includes('/orders/')){
+        updateShopUrl();
+      try {
+        const orderId = window.location.href.split('/orders/')[1]
+        if (localStorage.getItem(`x-validity-${orderId}`) !== 'done') {
+            updatePaymentGateway();
+            removeAdsString();
+            const base64_order = JSON.parse(JSON.parse(localStorage.getItem('xpresslane-order')))
+            const order = JSON.parse(atob(base64_order.data))
+
+            let product_ids = []
+            for (let i = 0; i < order.line_item.length; i++) {
+                product_ids.push(order.line_item[i].product_id);
+            }
+          fbq('track', 'Purchase', { 
+              value: parseFloat(order.grand_total), 
+              currency: 'INR',
+              content_ids: product_ids,
+              content_type:'product_group',
+              num_items:order.total_quantity
+            })
+          try{
+            ga('send', {
+              hitType: 'event',
+              eventCategory: 'ecommerce',
+              eventAction: 'purchase',
+              eventLabel: 'xpresslane',
+              eventValue: parseInt(order.grand_total)
+            });
+            ga('require', 'ecommerce');
+            ga('ecommerce:addTransaction', {
+              'id': order.shopify_order_id.toString(),
+              'affiliation': order.store_name+"-xpresslane",
+              'revenue': order.grand_total,
+              'shipping': order.shipping_charge,
+              'tax': order.tax
+            });
+            for (let i = 0; i < order.line_item.length; i++) {
+              ga('ecommerce:addItem', {
+                'id': (order.line_item[i].id).toString(),
+                'name': order.line_item[i].name,
+                'sku': order.line_item[i].sku,
+                'category': order.line_item[i].category,
+                'price':order.line_item[i].price,
+                'quantity': (order.line_item[i].quantity).toString()
+              });
+            }
+            ga('ecommerce:send');
+          } catch(e){
+            console.warn("Unable to trigger gtag purchase event ",e);
+          }
+          localStorage.setItem(`x-validity-${orderId}`, 'done')
+        }
+      } catch (e) {
+        console.warn('FB Pixel failed ', e)
+      }
+    }
+  }
+
+  function updateShopUrl(){
+    var widgetHTML = $('.main .main__header').html();
+    var url = new URL(window.location.href);
+    let home_url = url.origin;
+    widgetHTML = widgetHTML
+    .replace(/<span /g, '<a href="'+home_url+'/"')
+    .replace(/<\/span>/g, '</a>');
+    $('.main .main__header').html(widgetHTML);
+
+    return true;
+  }
+
+  function getFbqData(form_id='#checkoutXpresslane'){
+    var product_data = [];
+    let prod_json = $(form_id).children('#xpesslaneCartData').val();
+    let product = JSON.parse(prod_json);
+
+    product_data['currency'] = product.currency;
+    product_data['items_subtotal_price'] = product.items_subtotal_price/100;
+    product_data['item_count'] = product.item_count;
+    let product_ids = []
+    for (let i = 0; i < product.items.length; i++) {
+        product_ids.push(product.items[i].product_id);
+      }
+    product_data['product_ids'] = product_ids;
+    return product_data;
+  }
+
+  function getCountVal(shopName,url,payment_gateway=null)
+  {
+    return $.ajax({
+        url:url+'?shopurl='+shopName+"&payment_gateway="+payment_gateway,
+        method: 'GET',
+        crossDomain : true,
+        dataType: 'jsonp',
+        jsonpCallback: 'jsonpResponse',
+        headers: {
+            'accept': 'application/json',
+            'Content-Type': 'application/json',
+            'Response-Type': 'application/json'
+        }
+    });
+  }
+
+  function getPaymentGateway(shopName,url){
+    getCountVal(shopName,url).then(function(result){
+        let id = result.id;
+        let payment_gateway = result.payment_gateway;
+        let current_time = getCurrentTime();
+        if(id){
+            user = localStorage.getItem(shopName+'-user');
+            if(user == null){
+                localStorage.setItem(shopName+'-user','user_'+id);
+            }
+            localStorage.setItem(shopName+'-id',id);
+            localStorage.setItem(shopName+'-payment-gateway',payment_gateway);
+            localStorage.setItem(shopName+'-valid-till',current_time);
+        }
+    });
+}
+function updatePaymentGateway(){
+    var url = new URL(window.location.href);
+    let shopName = url.host;
+    let is_exclusive = parseInt(localStorage.getItem(shopName+'-is_exclusive'));
+    if(is_exclusive){
+        let req_url = localStorage.getItem(shopName+'-req_url');
+        let payment_gateway = localStorage.getItem(shopName+'-payment-gateway');
+        getCountVal(shopName,req_url,payment_gateway).then(function(result){
+            if(result.transaction_status == 'updated'){
+                return true;
+            }
+        });
+    }
+}
+
+function getCurrentTime(valid_till=0){
+    let current_time = Date.now();
+
+    if(valid_till){      
+        current_time = (current_time - valid_till) / 60000;
+    }
+
+    return current_time;
+}
+
+function getAdsString(url,shopName){
+    let ads_string = url.search;
+    let param_len = ads_string.split('&').length;
+    if(ads_string && url.searchParams.get("r") == null && param_len > 1){
+        let valid_till = getCurrentTime();
+        ads_string = ads_string.replace("?", "");
+        localStorage.setItem(shopName+'_urlparameters',ads_string);
+        localStorage.setItem(shopName+'_urlparameters-valid_till',valid_till);
+    }
+    return true;
+}
+
+function setAdsString(shopName){
+    let valid_till = localStorage.getItem(shopName+'_urlparameters-valid_till');
+    let avl_till = getCurrentTime(valid_till);
+    let saved_ads_string = localStorage.getItem(shopName+'_urlparameters');
+    if(saved_ads_string && avl_till <= 1440){//1440 mins = 24 hrs
+        $("#checkoutXpresslane").children('#urlparameters').val(saved_ads_string);
+    }else{
+        localStorage.setItem(shopName+'_urlparameters','');
+        localStorage.setItem(shopName+'_urlparameters-valid_till','');
+    }
+    return true;
+}
+
+function removeAdsString(){
+    var url = new URL(window.location.href);
+    let shopName = url.host;
+    localStorage.setItem(shopName+'_urlparameters','');
+    localStorage.setItem(shopName+'_urlparameters-valid_till','');
+    return true;
+}
+
+try{
+var cookie_name = $('#cookie-name').attr('data-id');
+var checkoutPageData = null;
+var cart_count_interval = null;
+
+$(document).ready(function () {
+    var url = new URL(window.location.href);
+    let shopName = $("#xpress_ab_checkout").children('#shop').val();
+    getAdsString(url,shopName);
+
+    var is_exclusive = parseInt($("#xpress_ab_checkout").children('#is_exclusive').val());
+    if(is_exclusive){
+        localStorage.setItem(shopName+'-is_exclusive',is_exclusive);
+        let payment_gateway_name =  localStorage.getItem(shopName+'-payment-gateway');
+        let valid_till = localStorage.getItem(shopName+'-valid-till');
+        let current_date = getCurrentTime(valid_till);
+        if(payment_gateway_name == null || current_date >= is_exclusive){
+            let req_url = $('#xpress_ab_checkout').children('#action').val();
+            localStorage.setItem(shopName+'-req_url',req_url);
+            getPaymentGateway(shopName,req_url);
+        }
+    }
+
+    if (url.searchParams.get("r") == 1) {
+        setAdsString(shopName);
+        if(is_exclusive){
+            let shopName = $("#checkoutXpresslane").children('#shop_name').val();
+            let payment_gateway_name =  localStorage.getItem(shopName+'-payment-gateway');
+    
+            if(payment_gateway_name == 'shopify'){
+                let checkout_url =  window.location.href.replace('?r=1', '/checkout');
+                window.location.href = checkout_url;
+            }else{
+                xpresslaneCheckout();
+            }
+        }else{
+            xpresslaneCheckout();
+        }
+    } else {
+        removeDiscountInfo();
+    }
+    if (url.searchParams.get("xpq") == 0) {
+        displayErrorMsg();
+    }
+
+    $(document).on('click', "#remove_discount_code", function () {
+        removeDiscountInfo();
+    });
+});
+
+
+$('#validateDiscount').click(function () {
+    let coupon = $('#ccInput').val();
+    coupon = coupon.trim();
+
+    if (coupon.length > 0) {
+        if ($("#discount_code").val() != coupon) {
+            applyDiscountCode(coupon);
+        }
+    }
+});
+
+$("#checkout_with_xpresslane").on("click", function () {
+    event.preventDefault();
+    sendCartPageData();
+});
+
+$(".show_image").on("click", function () {
+    console.log("Clicked");
+    $(".img_wrp").toggle();
+    $(".overlay").toggle();
+
+});
+
+function sendCartPageData() {
+    $('.ced-loader').css('display', 'flex');
+    $('.loader-message').text('Building your Cart');
+
+    var url = new URL(window.location.href);
+    if (url.searchParams.get("r") == 1) {
+        window.location.href = window.location.href;
+    } else {
+        var query_params = window.location.search;
+        if (query_params.indexOf("?") >= 0) {
+            window.location.href = window.location.href + "&r=1";
+        } else {
+            window.location.href = window.location.href + "?r=1";
+        }
+    }
+}
+
+function xpresslaneCheckout(){
+    var timeoutTime = $("#checkoutXpresslane").children('#timeout_time').val();
+    var cookie_value = read_cookie(cookie_name);
+    timeoutTime = parseInt(timeoutTime);
+        if(timeoutTime > 0) {
+            function redirectToXpresslane() {
+                if (cookie_value != null) {
+                    $("#discount_code").val(cookie_value["discount-code"]);
+                    $("#discount_data").val(JSON.stringify(cookie_value));
+                    if (Object.keys(cookie_value).length > 0) {
+                        sendAjax(cookie_value["discount-code"], false);
+                    } else {
+                        postForm();
+                    }
+                } else {
+                    getTax(true);
+                }
+            };
+            setTimeout(redirectToXpresslane, timeoutTime);
+        }else{
+        if (cookie_value != null) {
+            $("#discount_code").val(cookie_value["discount-code"]);
+            $("#discount_data").val(JSON.stringify(cookie_value));
+            if (Object.keys(cookie_value).length > 0) {
+                sendAjax(cookie_value["discount-code"], false);
+            } else {
+                postForm();
+            }
+        } else {
+            getTax(true);
+        }
+    }
+}
+
+function applyDiscountCode(code) {
+    delete_cookie(cookie_name);
+    sendAjax(code);
+}
+
+function sendAjax(code, showToUser = true) {
+    var applybuttontagname = document.getElementById("validateDiscount").tagName;
+    if (applybuttontagname != 'A') {
+        $('.ced-loader').css('display', 'flex');
+        $('.loader-message').text('Calculating Discount');
+    } else {
+        $('.validate-text').css('display', 'none');
+        $('.btn-loader').css('display', 'block');
+    }
+
+    var money_format = 'Rs. ';
+    $.ajax({
+        type: 'GET',
+        url: '/checkout?discount=' + code,
+        data: {},
+    }).done(function (data, textStatus, xhr) {
+
+        if (applybuttontagname != 'A') {
+            $('.ced-loader').css('display', 'none');
+            $('.loader-message').css('display', 'flex');
+        } else {
+            $('.validate-text').css('display', 'block');
+            $('.btn-loader').css('display', 'none');
+        }
+
+        let start_str = '<div id="order-summary"';
+
+        let end_str = '<div class="visually-hidden"';
+
+        var start = data.indexOf(start_str);
+
+        var end = data.indexOf(end_str);
+
+        let html = data.substr(start, end - start);
+
+        html.trim();
+
+        let jq = $.parseHTML(html);
+
+        // Gather the parsed HTML's node names
+        $.each(jq, function (i, el) {
+
+            if ($(el).hasClass('order-summary') && $(el).attr('id') == 'order-summary') {
+                if ($(el).find('.notice--warning').length > 0) {
+                    let pnotice__text = $(el).find('.notice--warning div.notice__content p.notice__text').text();
+                    if (pnotice__text.length > 0) {
+                        var error_html = '<div class="coupon-error">' + pnotice__text + '</div>';
+                        $("#discount_code").val('');
+                        $("#discount_data").val('');
+                        $("#discount-wrapper").html(error_html);
+                        $("#sub-total-with-discount-wrapper").html('');
+                        delete_cookie(cookie_name);
+                        getTax();
+                    }
+                }
+                else if ($(el).find('#error-for-reduction_code').length > 0) {
+                    var error_html = '<div class="coupon-error">This Coupon code is not valid. Please check and try again.</div>';
+                    $("#discount_code").val('');
+                    $("#discount_data").val('');
+                    $("#discount-wrapper").html(error_html);
+                    $("#sub-total-with-discount-wrapper").html('');
+                    delete_cookie(cookie_name);
+                    getTax();
+                }
+                else {
+                    var discount_data = {};
+
+                    let tbody = $(el).find('.order-summary__section--total-lines tbody tr');
+
+                    if (tbody.length > 0) {
+                        $.each(tbody, function (j, tr) {
+                            let $_tr = $(tr);
+                            if ($_tr.hasClass('total-line--subtotal')) {
+                                discount_data['subtotal'] = $_tr.find('td span').data('checkout-subtotal-price-target');
+                            }
+                            else if ($_tr.hasClass('total-line--reduction')) {
+                                discount_data['discount-type'] = $_tr.data('discount-type');
+
+                                discount_data['discount-code'] = $_tr.find('th span:nth-child(2) span').html();
+
+                                discount_data['discount-value'] = $_tr.find('td span:nth-child(1)').data('checkout-discount-amount-target');
+
+                                discount_data['discount-value_label'] = $_tr.find('td span:nth-child(1)').html();
+                            }
+                            else if ($_tr.hasClass('total-line--shipping')) {
+
+                            }
+                            else if ($_tr.hasClass('total-line--taxes')) {
+                                discount_data['taxes'] = $_tr.find('td span').data('checkout-total-taxes-target');
+                            }
+                        });
+                    }
+
+                    let trproduct = $(el).find('.product-table tbody tr');
+
+                    if (trproduct.length > 0) {
+                        var discount_code;
+                        var dv = 0.00;
+                        $.each(trproduct, function (trpi, trpd) {
+                            let $_trpd = $(trpd);
+                            if ($_trpd.hasClass('product')) {
+                                let discount_code_with_value = $_trpd.find('th ul li span.reduction-code__text').html();
+                                if (typeof discount_code_with_value != 'undefined') {
+                                    discount_code_with_value = discount_code_with_value.replaceAll(",",'');
+                                    var discount_data_values_with_symbol = discount_code_with_value.substring(discount_code_with_value.lastIndexOf("("), discount_code_with_value.lastIndexOf(")")).trim();
+                                    dv += parseFloat(discount_data_values_with_symbol.match(/(\d+)/)[0]);
+                                    discount_code = discount_code_with_value.substring(0, discount_code_with_value.lastIndexOf("(")).trim();
+                                }
+                            }
+                        });
+                        if (typeof discount_code != 'undefined') {
+                            discount_data['subtotal'] = discount_data['subtotal'] + (dv.toFixed(2)) * 100;
+                            discount_data['discount-value'] = (dv.toFixed(2)) * 100;
+                            discount_data['discount-value_label'] = "-" + money_format + dv.toFixed(2);
+                            discount_data['discount-code'] = discount_code;
+                        }
+                    }
+
+                    let tfoot = $(el).find('.order-summary__section--total-lines tfoot tr');
+                    if (tfoot.length > 0) {
+                        $.each(tfoot, function (j, tr) {
+                            let $_tr = $(tr);
+                            if ($_tr.hasClass('total-line')) {
+                                discount_data['total'] = $_tr.find('td span:nth-child(2)').data('checkout-payment-due-target');
+                                discount_data['taxes'] = $_tr.find('th span:nth-child(2) span').data('checkout-total-taxes-target');
+                            }
+                        });
+                    }
+
+                    var discount_value_label = discount_data['discount-value_label'];
+                    delete discount_data['discount-value_label'];// removing discount-value_label because it is breaking down the cookie data in safari browser because of the money symbol
+                    bake_cookie(cookie_name, discount_data);
+
+                    if (showToUser) {
+                        if (typeof discount_data["discount-code"] == 'undefined') {
+                            var error_html = '<div class="coupon-error">This Coupon code is not valid. Please check and try again.</div>';
+                            $("#discount_code").val('');
+                            $("#discount-wrapper").html(error_html);
+                            $("#sub-total-with-discount-wrapper").html('');
+                        } else {                var discount_html = '<div class="applied-coupon has-remove"><span class="coupon-code"><img class="coupon-icon" src=' + $("#coupon-png").val() + '>';
+                            discount_html += discount_data["discount-code"];
+                            discount_html += '<a href="javascript:void(0)" id="remove_discount_code"><img src=' + $("#cross-png").val() + '></a></span></div>';
+                            discount_html += '<div class="coupon-success">Coupon code applied successfully.</div>';
+                            $("#discount-wrapper").html(discount_html);
+
+                            var subtotal_discount_html = '<div class="coupon-details"><div>';
+                            subtotal_discount_html += '<span class="cart-subtotal__title">Applied Discount <span class="coupon-code"><img class="coupon-icon" src=' + $("#coupon-png").val() + '>';
+                            subtotal_discount_html += discount_data["discount-code"];
+                            subtotal_discount_html += '</span></span><span class="cart-subtotal__price">';
+                            subtotal_discount_html += discount_value_label;
+                            subtotal_discount_html += '</span></div><div class="total-amount"><span class="cart-subtotal__title">Total Amount</span><span class="cart-subtotal__price">';
+                            var grandTotal = (discount_data["subtotal"] - discount_data["discount-value"]) / 100;
+                            grandTotal = money_format + grandTotal.toFixed(2);
+
+                            subtotal_discount_html += grandTotal;
+                            subtotal_discount_html += '</span></div></div>';
+
+                            $("#discount_code").val(code);
+                            $("#sub-total-with-discount-wrapper").html(subtotal_discount_html);
+                        }
+
+                    } else {
+                        $("#discount_data").val(JSON.stringify(discount_data));
+                        postForm();
+                    }
+                }
+
+                if(!showToUser)
+                {
+                    postForm();
+                }
+            }
+        });
+    }).fail(function (request, textStatus, errorThrown) {
+        if (applybuttontagname != 'A') {
+            $('.ced-loader').css('display', 'none');
+            $('.loader-message').css('display', 'flex');
+        } else {
+            $('.validate-text').css('display', 'block');
+            $('.btn-loader').css('display', 'none');
+        }
+        var error_html = '<div class="coupon-error">This Coupon code is not valid. Please check and try again.</div>';
+        $("#discount_code").val('');
+        $("#discount-wrapper").html(error_html);
+        $("#sub-total-with-discount-wrapper").html('');
+        delete_cookie(cookie_name);
+        getTax();
+    });
+}
+
+function fetchCheckoutPageData() {
+    if (this.checkoutPageData == null) {
+        return checkoutCall().done(function (response) {
+            this.checkoutPageData = response;
+            return this.checkoutPageData;
+        });
+    } else {
+        return this.checkoutPageData;
+    }
+}
+
+function checkoutCall() {
+    return $.ajax({
+        type: 'GET',
+        url: "/checkout?t=".concat((new Date).getTime()),
+        data: {},
+    });
+}
+
+function getTax(postdata = false,source = null) {
+    postForm();
+}
+
+function bake_cookie(name, value) {
+    var cookie = [name, '=', JSON.stringify(value), '; domain=.', window.location.host.toString(), '; path=/;secure=true;'].join('');
+    document.cookie = cookie;
+}
+
+function read_cookie(name) {
+    if (name) {
+        var result = document.cookie.match(new RegExp(name + '=([^;]+)'));
+        result && (result = JSON.parse(result[1]));
+        return result;
+    }
+    else {
+        return null;
+    }
+}
+
+function delete_cookie(name) {
+    document.cookie = [name, '=; expires=Thu, 01-Jan-1970 00:00:01 GMT; path=/; domain=.', window.location.host.toString()].join('');
+}
+
+function postForm() {
+    try{
+        ga('send', {
+            hitType: 'event',
+            eventCategory: 'ecommerce',
+            eventAction: 'begin_checkout',
+            eventLabel: 'xpresslane'
+          });
+    } catch(e){
+        console.warn("Unable to trigger gtag event ",e);
+    }
+    try{
+        let fbq_data = getFbqData();
+        fbq('track', 'InitiateCheckout', { 
+            value: parseFloat(fbq_data.items_subtotal_price), 
+            currency: fbq_data.currency,
+            content_ids: fbq_data.product_ids,
+            content_type: 'product_group',
+            num_items: fbq_data.item_count
+        });
+
+    }catch(e){
+        console.warn("Unable to trigger fbpixel event ",e);
+    }
+
+    $('#checkoutXpresslane').submit();
+}
+
+function displayErrorMsg() {
+    $('.xpresslane-message').show();
+    setTimeout(function () {
+        $('.xpresslane-message').fadeOut();
+        // $('#name, #email, #msg, #origin').val('')
+    }, 3000);
+}
+
+function removeDiscountInfo(){
+    delete_cookie(cookie_name);
+    $('#ccInput').val('');
+    $("#discount_code").val('');
+    $("#discount-wrapper").html('');
+    $("#sub-total-with-discount-wrapper").html('');
+}
+
+//---------------------js for cart page checkout ends--------------------------------//
+//---------------------js for product page checkout starts--------------------------------//
+
+$(document).ready(function () {
+    var url = new URL(window.location.href);
+    if (url.searchParams.get("rp") == 1) {
+        addToCartV2();
+    }
+});
+
+$("#checkout_with_xpresslane_pp").on("click", function (event) {
+    event.preventDefault();
+    addToCartV2();
+});
+
+$("#checkout_with_xpresslane_pp_v2").on("click", function (event) {
+    event.preventDefault();
+    addToCartV2();
+});
+
+function addToCart(input_source=null)
+{
+    addToCartV2(input_source);
+}
+
+function addToCartV2(input_source=null,formClassOrId=null) {
+
+    if(input_source == null)
+    {
+        var source = '#checkoutXpresslanepp';
+    }else{
+        var source = '.'+input_source;
+    }
+
+    $("#error-msg").html('');
+    $("#error-msg").hide();
+
+    var url = new URL(window.location.href);
+    var variant_id = url.searchParams.get("variant");
+    var variant_id_2 = $(source).children('#variant_selected').val();
+    var product_json = $(source).children('#xpesslaneCartData').val();//'{{ product.variants | json }}';
+
+    if(variant_id == null && variant_id_2 != '')
+    {
+        variant_id = variant_id_2;
+    }
+    if (variant_id == null) {
+        $.each(JSON.parse(product_json).variants, function (key, value) {
+            if (key === 0 && value.available == true) {
+                variant_id = value.id;
+                return false;
+            }
+            if (value.available == true) {
+                variant_id = value.id;
+                return false;
+            }
+        });
+
+        if (variant_id == null) {
+            if (typeof JSON.parse(product_json).variants != 'undefined') {
+                variant_id = JSON.parse(product_json).variants[0].id;
+            } else {
+                variant_id = JSON.parse(product_json)[0].id;
+            }
+        }
+    } else {
+        if (variant_id.indexOf("?") > 0) {
+            variant_id = variant_id.substring(0, variant_id.indexOf('?'));
+        }
+    }
+
+    var qty = 1;
+    if (typeof $("input[name=quantity]").val() != 'undefined') {
+        qty = $("input[name=quantity]").val();
+    }
+
+    var json_parsed_data = JSON.parse('{"items":[{"id":' + variant_id + ',"quantity":' + qty + '}]}');
+
+    if(formClassOrId){
+        let properties_index = null;
+        let properties_data = {};
+        let form_data = $(formClassOrId).serializeArray();
+        $.each(form_data, function(i, field){
+            if (~field.name.indexOf("properties")){
+                properties_index = field.name.split("]");
+                properties_index = properties_index[0].split("[");
+                properties_index = properties_index[1];
+
+                properties_data[properties_index] = field.value;
+            }
+        });
+
+        if(properties_index && properties_data){
+            json_parsed_data = JSON.parse('{"items":[{"id":' + variant_id + ',"quantity":' + qty + ',"properties":'+JSON.stringify(properties_data)+'}]}'); 
+        }
+    }
+
+    var postForm = true;
+    $.each(JSON.parse(product_json).variants, function (key, value) {
+        if (value.id == variant_id) {
+            if (value.available == false) {
+                postForm = false;
+                displayErrorMsg();
+            }
+        }
+    });
+    $(source+" input[name=variant_selected]").val(variant_id);
+    $(source+" input[name=quantity]").val(qty);
+
+    if (postForm) {
+        $('.ced-loader').css('display', 'flex');
+        $('.loader-message').text('Gathering Product Information');
+
+        $.ajax('/cart/clear.js', {
+            type: 'POST',
+            dataType: 'json'
+        }).done(function (data) {
+            $.ajax('/cart/add.js', {
+                dataType: 'json', // type of response data
+                type: 'POST',
+                data: json_parsed_data
+            }).done(function (data) {   // success callback function
+                window.location.href = "https://"+document.location.hostname+"/cart?r=1";
+
+            }).fail(function (data, textStatus, errorThrown) {
+                console.log(data,textStatus, errorThrown);
+                if(typeof data.status != 'undefined' && data.status == 422)
+                {
+                    $('.ced-loader').css('display', 'none');
+                    $('.loader-message').css('display', 'flex');
+                    displayErrorMsg();
+                }else{
+                    postProductForm(input_source);
+                }
+            });
+        }).fail(function (data, textStatus, errorThrown) {
+            console.log(data,textStatus, errorThrown);
+            postProductForm(input_source);
+        });
+    }
+}
+
+function postProductForm(source = null) {
+    if(source == null)
+    {
+        source = '#checkoutXpresslanepp';
+    }else{
+        source = '.'+source;
+    }
+    try{
+        ga('send', {
+            hitType: 'event',
+            eventCategory: 'ecommerce',
+            eventAction: 'begin_checkout',
+            eventLabel: 'xpresslane'
+          });
+    } catch(e){
+        console.warn("Unable to trigger gtag event ",e);
+    }
+    try{
+        let fbq_data = getFbqData();
+        fbq('track', 'InitiateCheckout', { 
+            value: parseFloat(fbq_data.items_subtotal_price), 
+            currency: fbq_data.currency,
+            content_ids: fbq_data.product_ids,
+            content_type: 'product_group',
+            num_items: fbq_data.item_count
+
+        });
+    }catch(e){
+        console.warn("Unable to trigger fbpixel event ",e);
+    }
+
+    $(source).submit();
+}
+}
+catch(e){
+    console.warn("Something Unexpected",e);
+}
